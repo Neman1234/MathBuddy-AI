@@ -12,7 +12,7 @@ export const Header: React.FC = () => {
             </div>
             <div>
               <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-                MathBuddy AI
+                Math AI
               </h1>
               <p className="text-sm text-gray-600">Learn math the fun way!</p>
             </div>
