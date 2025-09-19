@@ -32,9 +32,9 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 
 export const UserProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User>({
-    name: 'Alex',
-    age: 12,
-    grade: '7',
+    name: 'Neel',
+    age: 10,
+    grade: '3',
     mathLevel: 'intermediate',
     language: 'en',
     level: 3,
