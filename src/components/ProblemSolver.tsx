@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Type, Send, Sparkles, Eye, EyeOff, AlertTriangle, Wifi, WifiOff } from 'lucide-react';
+import { Camera, Type, Send, Sparkles, Eye, EyeOff, AlertTriangle, Wifi, WifiOff, Upload, X } from 'lucide-react';
 import { AIResponse } from './AIResponse';
 import { SimilarProblems } from './SimilarProblems';
 import { AIService, AIResponse as AIResponseType } from '../services/aiService';
@@ -7,6 +7,8 @@ import { AIService, AIResponse as AIResponseType } from '../services/aiService';
 export const ProblemSolver: React.FC = () => {
   const [inputMethod, setInputMethod] = useState<'text' | 'image'>('text');
   const [problem, setProblem] = useState('');
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [showSolution, setShowSolution] = useState(false);
   const [showAnswer, setShowAnswer] = useState(false);
   const [aiResponse, setAiResponse] = useState<AIResponseType | null>(null);
@@ -16,6 +18,73 @@ export const ProblemSolver: React.FC = () => {
   // Check if API is configured
   const isConfigured = AIService.isConfigured();
 
+  // Generate a concise summary from the AI response
+  const generateSummary = (response: string): string => {
+    if (!response) return 'No summary available';
+    
+    // Split response into lines and find key information
+    const lines = response.split('\n').filter(line => line.trim());
+    
+    // Look for final answer patterns
+    const answerPatterns = [
+      /(?:answer|solution|result):\s*(.+)/i,
+      /(?:therefore|thus|so)[\s,]*(.+)/i,
+      /(?:final answer|the answer is)[\s:]*(.+)/i,
+      /(?:x\s*=|y\s*=|z\s*=)\s*(.+)/i,
+      /(?:area|perimeter|volume)\s*(?:is|=)\s*(.+)/i
+    ];
+    
+    let summary = '';
+    let finalAnswer = '';
+    
+    // Extract final answer
+    for (const line of lines) {
+      for (const pattern of answerPatterns) {
+        const match = line.match(pattern);
+        if (match && match[1]) {
+          finalAnswer = match[1].trim();
+          break;
+        }
+      }
+      if (finalAnswer) break;
+    }
+    
+    // If no specific answer found, look for mathematical expressions
+    if (!finalAnswer) {
+      const mathExpressions = lines.filter(line => 
+        /[=]\s*[\d\w\s\+\-\*\/\(\)\.]+$/.test(line.trim()) ||
+        /^\s*[\d\w\s\+\-\*\/\(\)\.]+\s*$/.test(line.trim())
+      );
+      if (mathExpressions.length > 0) {
+        finalAnswer = mathExpressions[mathExpressions.length - 1].trim();
+      }
+    }
+    
+    // Build summary
+    if (finalAnswer) {
+      summary += `🎯 Final Answer: ${finalAnswer}\n\n`;
+    }
+    
+    // Add key steps (first few meaningful lines)
+    const keySteps = lines
+      .filter(line => 
+        line.length > 10 && 
+        !line.toLowerCase().includes('step') &&
+        !line.toLowerCase().includes('solution') &&
+        line.includes('=') || line.includes('calculate') || line.includes('find')
+      )
+      .slice(0, 3);
+    
+    if (keySteps.length > 0) {
+      summary += `📝 Key Steps:\n${keySteps.map(step => `• ${step.trim()}`).join('\n')}`;
+    } else {
+      // Fallback: show first few lines of response
+      const firstLines = lines.slice(0, 3);
+      summary += `📋 Solution Overview:\n${firstLines.map(line => `• ${line.trim()}`).join('\n')}`;
+    }
+    
+    return summary || 'Solution completed successfully! Check the detailed explanation above.';
+  };
   // Test connection on component mount
   React.useEffect(() => {
     if (isConfigured) {
@@ -26,7 +95,8 @@ export const ProblemSolver: React.FC = () => {
   }, [isConfigured]);
 
   const handleSolve = async () => {
-    if (!problem.trim()) return;
+    if (inputMethod === 'text' && !problem.trim()) return;
+    if (inputMethod === 'image' && !selectedImage) return;
     
     setIsLoading(true);
     setShowSolution(true);
@@ -34,21 +104,29 @@ export const ProblemSolver: React.FC = () => {
     
     // Initialize loading state
     const loadingResponse: AIResponseType = {
-      model: 'Gemini AI',
+      model: inputMethod === 'image' ? 'Gemini Vision AI' : 'Gemini AI',
       response: '',
       isLoading: true
     };
     setAiResponse(loadingResponse);
 
     try {
-      // Get response from Gemini
-      const response = await AIService.getSolution(problem);
+      let response: AIResponseType;
+      
+      if (inputMethod === 'image' && selectedImage) {
+        // Get response from Gemini Vision
+        response = await AIService.getSolutionFromImage(selectedImage);
+      } else {
+        // Get response from Gemini Text
+        response = await AIService.getSolution(problem);
+      }
+      
       setConnectionStatus(response.error ? 'error' : 'connected');
       setAiResponse(response);
     } catch (error) {
       console.error('Error getting AI response:', error);
       setAiResponse({
-        model: 'Gemini AI',
+        model: inputMethod === 'image' ? 'Gemini Vision AI' : 'Gemini AI',
         response: '',
         error: 'Failed to get response. Please try again.',
         isLoading: false
@@ -60,7 +138,7 @@ export const ProblemSolver: React.FC = () => {
   };
 
   const handleRetry = () => {
-    if (problem.trim()) {
+    if ((inputMethod === 'text' && problem.trim()) || (inputMethod === 'image' && selectedImage)) {
       handleSolve();
     }
   };
@@ -68,9 +146,54 @@ export const ProblemSolver: React.FC = () => {
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      // In a real app, you would process the image here
-      setProblem('Uploaded image: ' + file.name + ' (Image processing not implemented yet)');
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        alert('Please select a valid image file (JPG, PNG, GIF, etc.)');
+        return;
+      }
+      
+      // Validate file size (max 4MB)
+      if (file.size > 4 * 1024 * 1024) {
+        alert('Image file is too large. Please select an image smaller than 4MB.');
+        return;
+      }
+      
+      setSelectedImage(file);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setImagePreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+      
+      // Clear text problem when image is selected
+      setProblem('');
     }
+  };
+
+  const handleRemoveImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    // Reset file input
+    const fileInput = document.getElementById('image-upload') as HTMLInputElement;
+    if (fileInput) {
+      fileInput.value = '';
+    }
+  };
+
+  const handleInputMethodChange = (method: 'text' | 'image') => {
+    setInputMethod(method);
+    // Clear previous inputs when switching methods
+    if (method === 'text') {
+      setSelectedImage(null);
+      setImagePreview(null);
+    } else {
+      setProblem('');
+    }
+    // Reset solution display
+    setShowSolution(false);
+    setAiResponse(null);
   };
 
   return (
@@ -108,7 +231,7 @@ export const ProblemSolver: React.FC = () => {
           </div>
           <p className={`text-sm ${connectionStatus === 'connected' ? 'text-green-700' : 'text-yellow-700'}`}>
             {connectionStatus === 'connected' 
-              ? 'MathBuddy AI is ready to help with your math problems!' 
+              ? 'Gemini AI is ready to help with your math problems!' 
               : 'There may be connection issues. Solutions might be delayed.'}
           </p>
         </div>
@@ -120,7 +243,7 @@ export const ProblemSolver: React.FC = () => {
           <h3 className="text-lg font-semibold text-gray-900 mb-4">How would you like to input your problem?</h3>
           <div className="flex gap-4">
             <button
-              onClick={() => setInputMethod('text')}
+              onClick={() => handleInputMethodChange('text')}
               className={`flex items-center space-x-2 px-4 py-3 rounded-lg border-2 transition-all ${
                 inputMethod === 'text'
                   ? 'border-blue-500 bg-blue-50 text-blue-700'
@@ -131,7 +254,7 @@ export const ProblemSolver: React.FC = () => {
               <span className="font-medium">Type Problem</span>
             </button>
             <button
-              onClick={() => setInputMethod('image')}
+              onClick={() => handleInputMethodChange('image')}
               className={`flex items-center space-x-2 px-4 py-3 rounded-lg border-2 transition-all ${
                 inputMethod === 'image'
                   ? 'border-purple-500 bg-purple-50 text-purple-700'
@@ -166,29 +289,62 @@ export const ProblemSolver: React.FC = () => {
               <label className="block text-sm font-medium text-gray-700">
                 Upload an image of your math problem:
               </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-purple-400 transition-colors">
-                <Camera className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600 mb-4">Click to upload or drag and drop</p>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                  id="image-upload"
-                />
-                <label
-                  htmlFor="image-upload"
-                  className="bg-purple-500 text-white px-6 py-2 rounded-lg cursor-pointer hover:bg-purple-600 transition-colors"
-                >
-                  Choose Image
-                </label>
-              </div>
+              <p className="text-sm text-gray-500 mb-4">Supported formats: JPG, PNG, GIF (max 4MB)</p>
+              {!selectedImage ? (
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-purple-400 transition-colors">
+                  <Camera className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-gray-600 mb-4">Click to upload or drag and drop</p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                    id="image-upload"
+                  />
+                  <label
+                    htmlFor="image-upload"
+                    className="bg-purple-500 text-white px-6 py-2 rounded-lg cursor-pointer hover:bg-purple-600 transition-colors"
+                  >
+                    Choose Image
+                  </label>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="relative border border-gray-300 rounded-lg p-4">
+                    <button
+                      onClick={handleRemoveImage}
+                      className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                    <div className="flex items-center space-x-4">
+                      {imagePreview && (
+                        <img
+                          src={imagePreview}
+                          alt="Math problem preview"
+                          className="w-32 h-32 object-cover rounded-lg border border-gray-200"
+                        />
+                      )}
+                      <div>
+                        <p className="font-medium text-gray-900">{selectedImage.name}</p>
+                        <p className="text-sm text-gray-500">
+                          {(selectedImage.size / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                        <div className="flex items-center space-x-2 mt-2">
+                          <Upload className="w-4 h-4 text-green-500" />
+                          <span className="text-sm text-green-600">Ready to analyze</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           <button
             onClick={handleSolve}
-            disabled={!problem.trim() || isLoading}
+            disabled={(inputMethod === 'text' && !problem.trim()) || (inputMethod === 'image' && !selectedImage) || isLoading}
             className="mt-4 w-full bg-gradient-to-r from-blue-500 to-purple-500 text-white px-6 py-3 rounded-lg font-medium hover:from-blue-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center space-x-2"
           >
             {isLoading ? (
@@ -196,7 +352,7 @@ export const ProblemSolver: React.FC = () => {
             ) : (
               <>
                 <Send className="w-5 h-5" />
-                <span>Solve Problem</span>
+                <span>{inputMethod === 'image' ? 'Analyze Image' : 'Solve Problem'}</span>
                 <Sparkles className="w-5 h-5" />
               </>
             )}
@@ -207,7 +363,11 @@ export const ProblemSolver: React.FC = () => {
       {/* AI Solution */}
       {showSolution && aiResponse && (
         <div className="space-y-6">
-          <AIResponse problem={problem} response={aiResponse} onRetry={handleRetry} />
+          <AIResponse 
+            problem={inputMethod === 'image' ? `Image: ${selectedImage?.name || 'Uploaded image'}` : problem} 
+            response={aiResponse} 
+            onRetry={handleRetry} 
+          />
           
           {!isLoading && aiResponse.response && !aiResponse.error && (
             <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
@@ -224,15 +384,20 @@ export const ProblemSolver: React.FC = () => {
               
               {showAnswer && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <p className="text-lg font-bold text-green-800 mb-2">✅ Solution Complete!</p>
-                  <p className="text-green-600">Review the detailed step-by-step solution above to understand how to solve similar problems!</p>
+                  <p className="text-lg font-bold text-green-800 mb-3">✅ Solution Summary</p>
+                  <div className="text-green-700 text-sm whitespace-pre-line max-h-32 overflow-y-auto">
+                    {generateSummary(aiResponse.response)}
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-green-200">
+                    <p className="text-green-600 text-xs">💡 Review the detailed step-by-step solution above to understand how to solve similar problems!</p>
+                  </div>
                 </div>
               )}
             </div>
           )}
 
           {!isLoading && aiResponse.response && !aiResponse.error && (
-            <SimilarProblems currentProblem={problem} />
+            <SimilarProblems currentProblem={inputMethod === 'image' ? 'Image-based math problem' : problem} />
           )}
         </div>
       )}
